@@ -17,12 +17,19 @@ struct HttpRequest {
 
 impl HttpRequest {
     fn from_bytes(bytes: BytesMut) -> Result<HttpRequest, Error> {
-        let lines: Vec<String> = bytes
-            .lines()
-            .map(|line| line.context("Invalid request"))
-            .collect::<Result<Vec<_>, _>>()?; // convert to Result<Vec<String>, Error>  due to maping lines and unwrapping the it
+        let header_end = bytes
+            .windows(4)
+            .position(|word| word == b"\r\n\r\n")
+            .context("Unable to find header/body seperator")?;
 
-        let request_line = lines.get(0).context("No request line")?;
+        let header_data = &bytes[..header_end];
+        let body_data = &bytes[header_end + 4..];
+
+        let header_str = std::str::from_utf8(header_data).context("unable to parse header")?;
+
+        let mut lines = header_str.lines();
+
+        let request_line = lines.next().context("No request line")?;
         let request_line_parts: Vec<&str> = request_line.split_whitespace().collect();
         if request_line_parts.len() != 3 {
             anyhow::bail!(
@@ -31,29 +38,33 @@ impl HttpRequest {
             );
         }
         let mut request_headers = HashMap::new();
-        if let Some(pos) = lines.iter().position(|x| x == "") {
-            let recieved_headers = &lines[1..pos];
-            let _body = &lines[pos + 1..];
-            for header in recieved_headers {
-                let parts: Vec<&str> = header.split(": ").collect();
-                if parts.len() != 2 {
-                    anyhow::bail!("invalid header: expected 2 parts, got {}", parts.len());
-                }
-                request_headers.insert(parts[0].to_string(), parts[1].to_string());
+        for header in lines {
+            if header.is_empty() {
+                break;
             }
-        } else {
-            return Err(anyhow::anyhow!("No request body found"));
+            let parts: Vec<&str> = header.split(": ").collect();
+            if parts.len() != 2 {
+                anyhow::bail!("invalid header: expected 2 parts, got {}", parts.len());
+            }
+            request_headers.insert(parts[0].to_string(), parts[1].to_string());
         }
+        let content_length: usize = request_headers
+            .get("Content-Length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        let body = body_data[..content_length.min(body_data.len())].to_vec();
 
         Ok(HttpRequest {
             method: request_line_parts[0].to_string(),
             path: request_line_parts[1].to_string(),
             headers: request_headers,
-            body: vec![],
+            body,
         })
     }
 }
 
+#[derive(Debug)]
 struct HttpResponse {
     status_code: u16,
     headers: HashMap<String, String>,
@@ -73,6 +84,9 @@ impl HttpResponse {
     }
     pub fn ok() -> Self {
         HttpResponse::new(200)
+    }
+    pub fn created() -> Self {
+        HttpResponse::new(201)
     }
     pub fn internal_server_error() -> Self {
         HttpResponse::new(500)
@@ -153,6 +167,7 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
         .context("Failed to read")?;
     let request = HttpRequest::from_bytes(input)?;
     let response = handle_request(request, &config);
+    println!("Response: {:?}", response);
     let result = match response {
         Ok(resp) => resp,
         Err(_) => HttpResponse::internal_server_error(),
@@ -177,28 +192,58 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
     if let Some(first_segment) = segments.first() {
         let resp = match *first_segment {
             "files" => {
-                let file_path = segments.get(1).unwrap_or(&"");
+                let Some(file_path) = segments.get(1) else {
+                    return Ok(HttpResponse::not_found());
+                };
+
                 let Some(root_dir) = &config.static_directory else {
                     return Ok(HttpResponse::not_found());
                 };
 
-                let file_path = format!("{}/{}", root_dir, file_path);
+                let file_path = format!("{}{}", root_dir, file_path);
+                println!("File Path: {}", file_path);
+                println!("Request Method: {:?}", request.method.as_str());
 
-                if let Ok(metadata) = std::fs::metadata(&file_path) {
-                    if metadata.is_file() {
-                        let mut resp = HttpResponse::ok();
-                        resp.set_header(
-                            "Content-Type".to_string(),
-                            "application/octet-stream".to_string(),
-                        );
-                        resp.set_header("Content-Length".to_string(), metadata.len().to_string());
-                        resp.set_body(std::fs::read(file_path).unwrap().into());
-                        resp
-                    } else {
-                        HttpResponse::not_found()
+                match request.method.as_str() {
+                    "POST" => {
+                        if request.body.len() > 0 {
+                            if let Err(_err) = std::fs::write(&file_path, request.body.clone()) {
+                                println!("Error writing file: {:?}", _err);
+                                return Ok(HttpResponse::internal_server_error());
+                            } else {
+                                println!("File created successfully");
+                            }
+                        } else {
+                            println!("No data to write");
+                        }
+                        HttpResponse::created()
                     }
-                } else {
-                    HttpResponse::not_found()
+
+                    "GET" => {
+                        if let Ok(metadata) = std::fs::metadata(&file_path) {
+                            if metadata.is_file() {
+                                let mut resp = HttpResponse::ok();
+                                resp.set_header(
+                                    "Content-Type".to_string(),
+                                    "application/octet-stream".to_string(),
+                                );
+                                resp.set_header(
+                                    "Content-Length".to_string(),
+                                    metadata.len().to_string(),
+                                );
+                                resp.set_body(std::fs::read(file_path).unwrap().into());
+                                resp
+                            } else {
+                                HttpResponse::not_found()
+                            }
+                        } else {
+                            HttpResponse::not_found()
+                        }
+                    }
+                    _ => {
+                        println!("Unsupported method");
+                        HttpResponse::internal_server_error()
+                    }
                 }
             }
             "echo" => {
