@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Result<()> {
-    let mut input = BytesMut::zeroed(1024);
+    let mut input = BytesMut::with_capacity(1024);
 
     let _ = stream
         .read_buf(&mut input)
