@@ -181,7 +181,7 @@ fn tests_handle_request() {
         body: vec![],
         path: "/".to_string(),
         method: "GET".to_string(),
-        headers: vec![],
+        headers: HashMap::new(),
     })
     .unwrap()
     .status_code;
@@ -190,7 +190,7 @@ fn tests_handle_request() {
     let actual = handle_request(HttpRequest {
         method: "GET".to_string(),
         path: "".to_string(),
-        headers: vec![],
+        headers: HashMap::new(),
         body: vec![],
     })
     .unwrap()
@@ -200,7 +200,7 @@ fn tests_handle_request() {
     let actual = handle_request(HttpRequest {
         method: "GET".to_string(),
         path: "/something".to_string(),
-        headers: vec![],
+        headers: HashMap::new(),
         body: vec![],
     })
     .unwrap()
@@ -210,7 +210,7 @@ fn tests_handle_request() {
     let actual = handle_request(HttpRequest {
         method: "GET".to_string(),
         path: "/something/something".to_string(),
-        headers: vec![],
+        headers: HashMap::new(),
         body: vec![],
     })
     .unwrap()
@@ -220,7 +220,7 @@ fn tests_handle_request() {
     let actual = handle_request(HttpRequest {
         method: "GET".to_string(),
         path: "/echo/something".to_string(),
-        headers: vec![],
+        headers: HashMap::new(),
         body: vec![],
     })
     .unwrap()
