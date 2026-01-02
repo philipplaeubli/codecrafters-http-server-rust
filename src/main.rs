@@ -55,10 +55,21 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
         .await
         .context("Failed to read")?;
     let request = HttpRequest::from_bytes(input)?;
-    let response = handle_request(request, &config);
-    println!("Response: {:?}", response);
+
+    let response = handle_request(&request, &config);
+
     let result = match response {
-        Ok(resp) => resp,
+        Ok(mut resp) => {
+            if let Some(accept_encoding) = &request.headers.get("Accept-Encoding") {
+                println!("Accept-Encoding: {:?}", accept_encoding);
+
+                if **accept_encoding == "gzip".to_string() {
+                    resp.set_header("Content-Encoding".to_string(), "gzip".to_string());
+                }
+            }
+
+            resp
+        }
         Err(_) => HttpResponse::internal_server_error(),
     };
 
@@ -69,14 +80,12 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
     Ok(())
 }
 
-fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpResponse> {
+fn handle_request(request: &HttpRequest, config: &ServerConfig) -> Result<HttpResponse> {
     let segments = request
         .path
         .split("/")
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<&str>>();
-
-    println!("Path Segments: {:?}", segments);
 
     if let Some(first_segment) = segments.first() {
         let resp = match *first_segment {
@@ -164,7 +173,7 @@ fn tests_handle_request() {
     };
 
     let actual = handle_request(
-        HttpRequest {
+        &HttpRequest {
             body: vec![],
             path: "/".to_string(),
             method: "GET".to_string(),
@@ -177,7 +186,7 @@ fn tests_handle_request() {
     assert_eq!(200, actual);
 
     let actual = handle_request(
-        HttpRequest {
+        &HttpRequest {
             method: "GET".to_string(),
             path: "".to_string(),
             headers: std::collections::HashMap::new(),
@@ -190,7 +199,7 @@ fn tests_handle_request() {
     assert_eq!(200, actual);
 
     let actual = handle_request(
-        HttpRequest {
+        &HttpRequest {
             method: "GET".to_string(),
             path: "/something".to_string(),
             headers: std::collections::HashMap::new(),
@@ -203,7 +212,7 @@ fn tests_handle_request() {
     assert_eq!(404, actual);
 
     let actual = handle_request(
-        HttpRequest {
+        &HttpRequest {
             method: "GET".to_string(),
             path: "/something/something".to_string(),
             headers: std::collections::HashMap::new(),
@@ -216,7 +225,7 @@ fn tests_handle_request() {
     assert_eq!(404, actual);
 
     let actual = handle_request(
-        HttpRequest {
+        &HttpRequest {
             method: "GET".to_string(),
             path: "/echo/something".to_string(),
             headers: std::collections::HashMap::new(),
