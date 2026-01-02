@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::env;
 use std::io::{BufRead, Read, Write};
+use std::ops::ControlFlow;
 
 use anyhow::{Context, Error, Result};
 use bytes::BytesMut;
@@ -43,7 +45,6 @@ impl HttpRequest {
             return Err(anyhow::anyhow!("No request body found"));
         }
 
-        println!("request lines unparsed: {:?}", lines);
         Ok(HttpRequest {
             method: request_line_parts[0].to_string(),
             path: request_line_parts[1].to_string(),
@@ -106,24 +107,44 @@ impl HttpResponse {
         response
     }
 }
+
+#[derive(Debug, Clone)]
+struct ServerConfig {
+    static_directory: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut args = env::args();
+    let mut config = ServerConfig {
+        static_directory: None,
+    };
+    println!("Arguments: {:?}", args);
+    if args.len() > 2 {
+        let directory_flag = args.nth(1).context("unable to parse directory flag")?;
+        if directory_flag == "--directory" {
+            let abs_directory = args.nth(0).context("unable to parse absolute directory")?;
+            config.static_directory = Some(abs_directory);
+        }
+    }
+
     let listener = TcpListener::bind("127.0.0.1:4221")
         .await
         .context("Unable to bind port")?;
 
+    println!("Service ready with config: {:?}", config);
     loop {
         let (stream, _) = listener.accept().await?;
-
+        let config = config.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream).await {
+            if let Err(e) = handle_connection(stream, config).await {
                 eprintln!("Connection error: {e:?}");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<()> {
+async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Result<()> {
     let mut input = BytesMut::zeroed(1024);
 
     let _ = stream
@@ -131,7 +152,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
         .await
         .context("Failed to read")?;
     let request = HttpRequest::from_bytes(input)?;
-    let response = handle_request(request);
+    let response = handle_request(request, &config);
     let result = match response {
         Ok(resp) => resp,
         Err(_) => HttpResponse::internal_server_error(),
@@ -144,7 +165,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
-fn handle_request(request: HttpRequest) -> Result<HttpResponse> {
+fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpResponse> {
     let segments = request
         .path
         .split("/")
@@ -155,6 +176,31 @@ fn handle_request(request: HttpRequest) -> Result<HttpResponse> {
 
     if let Some(first_segment) = segments.first() {
         let resp = match *first_segment {
+            "files" => {
+                let file_path = segments.get(1).unwrap_or(&"");
+                let Some(root_dir) = &config.static_directory else {
+                    return Ok(HttpResponse::not_found());
+                };
+
+                let file_path = format!("{}/{}", root_dir, file_path);
+
+                if let Ok(metadata) = std::fs::metadata(&file_path) {
+                    if metadata.is_file() {
+                        let mut resp = HttpResponse::ok();
+                        resp.set_header(
+                            "Content-Type".to_string(),
+                            "application/octet-stream".to_string(),
+                        );
+                        resp.set_header("Content-Length".to_string(), metadata.len().to_string());
+                        resp.set_body(std::fs::read(file_path).unwrap().into());
+                        resp
+                    } else {
+                        HttpResponse::not_found()
+                    }
+                } else {
+                    HttpResponse::not_found()
+                }
+            }
             "echo" => {
                 let message = *segments.get(1).unwrap_or(&"");
 
