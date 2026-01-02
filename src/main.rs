@@ -50,39 +50,47 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Result<()> {
-    let mut input = BytesMut::with_capacity(1024);
+    loop {
+        let mut input = BytesMut::with_capacity(1024);
 
-    let _ = stream
-        .read_buf(&mut input)
-        .await
-        .context("Failed to read")?;
-    let request = HttpRequest::from_bytes(input)?;
+        let _ = stream
+            .read_buf(&mut input)
+            .await
+            .context("Failed to read")?;
 
-    let response = handle_request(&request, &config);
-
-    let result = match response {
-        Ok(mut resp) => {
-            if let Some(accept_encoding) = &request.headers.get("Accept-Encoding") {
-                println!("Accept-Encoding: {:?}", accept_encoding);
-
-                if accept_encoding.contains("gzip") {
-                    let mut e = GzEncoder::new(Vec::new(), Compression::default());
-                    e.write_all(&resp.body).unwrap();
-                    resp.body = e.finish().unwrap();
-                    resp.set_header("Content-Encoding".to_string(), "gzip".to_string());
-                    resp.set_header("Content-Length".to_string(), resp.body.len().to_string());
-                }
+        let request = HttpRequest::from_bytes(input)?;
+        if let Some(connection) = request.headers.get("Connection") {
+            if connection == "close" {
+                break;
             }
-
-            resp
         }
-        Err(_) => HttpResponse::internal_server_error(),
-    };
 
-    let _res = stream
-        .write(result.encode().as_slice())
-        .await
-        .context("Unable to write")?;
+        let response = handle_request(&request, &config);
+
+        let result = match response {
+            Ok(mut resp) => {
+                if let Some(accept_encoding) = &request.headers.get("Accept-Encoding") {
+                    println!("Accept-Encoding: {:?}", accept_encoding);
+
+                    if accept_encoding.contains("gzip") {
+                        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+                        e.write_all(&resp.body).unwrap();
+                        resp.body = e.finish().unwrap();
+                        resp.set_header("Content-Encoding".to_string(), "gzip".to_string());
+                        resp.set_header("Content-Length".to_string(), resp.body.len().to_string());
+                    }
+                }
+
+                resp
+            }
+            Err(_) => HttpResponse::internal_server_error(),
+        };
+
+        let _res = stream
+            .write(result.encode().as_slice())
+            .await
+            .context("Unable to write")?;
+    }
     Ok(())
 }
 
