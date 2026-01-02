@@ -1,12 +1,14 @@
 use std::env;
 
-use anyhow::{Context, Result};
-use bytes::BytesMut;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-
 use crate::request::HttpRequest;
 use crate::response::HttpResponse;
+use anyhow::{Context, Result};
+use bytes::BytesMut;
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use std::io::Write;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 mod request;
 mod response;
@@ -64,7 +66,11 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
                 println!("Accept-Encoding: {:?}", accept_encoding);
 
                 if accept_encoding.contains("gzip") {
+                    let mut e = GzEncoder::new(Vec::new(), Compression::default());
+                    e.write_all(&resp.body).unwrap();
+                    resp.body = e.finish().unwrap();
                     resp.set_header("Content-Encoding".to_string(), "gzip".to_string());
+                    resp.set_header("Content-Length".to_string(), resp.body.len().to_string());
                 }
             }
 
