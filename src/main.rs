@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-use std::net::TcpListener;
-use std::{
-    io::{BufRead, Read, Write},
-    net::TcpStream,
-};
+use std::io::{BufRead, Read, Write};
 
 use anyhow::{Context, Error, Result};
 use bytes::BytesMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 struct HttpRequest {
     method: String,
@@ -108,22 +106,30 @@ impl HttpResponse {
         response
     }
 }
+#[tokio::main]
+async fn main() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:4221")
+        .await
+        .context("Unable to bind port")?;
 
-fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:4221").context("Unable to bind port")?;
+    loop {
+        let (stream, _) = listener.accept().await?;
 
-    for stream in listener.incoming() {
-        let stream = stream.context("Unable to accept connection")?;
-        if let Err(e) = handle_connection(stream) {
-            eprintln!("Connection error: {e:?}");
-        };
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream).await {
+                eprintln!("Connection error: {e:?}");
+            }
+        });
     }
-    Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) -> Result<()> {
+async fn handle_connection(mut stream: TcpStream) -> Result<()> {
     let mut input = BytesMut::zeroed(1024);
-    let _ = stream.read(&mut input).context("Failed to read")?;
+
+    let _ = stream
+        .read_buf(&mut input)
+        .await
+        .context("Failed to read")?;
     let request = HttpRequest::from_bytes(input)?;
     let response = handle_request(request);
     let result = match response {
@@ -131,9 +137,11 @@ fn handle_connection(mut stream: TcpStream) -> Result<()> {
         Err(_) => HttpResponse::internal_server_error().encode(),
     };
 
-    stream
-        .write_all(result.as_slice())
-        .context("Unable to write")
+    let _res = stream
+        .write(result.as_slice())
+        .await
+        .context("Unable to write")?;
+    Ok(())
 }
 
 fn handle_request(request: HttpRequest) -> Result<HttpResponse> {
