@@ -90,18 +90,13 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
                 };
 
                 let file_path = format!("{}{}", root_dir, file_path);
-                println!("File Path: {}", file_path);
-                println!("Request Method: {:?}", request.method.as_str());
 
                 match request.method.as_str() {
                     "POST" => {
                         if let Err(_err) = std::fs::write(&file_path, request.body.clone()) {
-                            println!("Error writing file: {:?}", _err);
+                            eprintln!("Error writing file: {:?}", _err);
                             return Ok(HttpResponse::internal_server_error());
-                        } else {
-                            println!("File created successfully");
                         }
-
                         HttpResponse::created()
                     }
 
@@ -129,7 +124,7 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
                         }
                     }
                     _ => {
-                        println!("Unsupported method");
+                        eprintln!("Unsupported method");
                         HttpResponse::internal_server_error()
                     }
                 }
