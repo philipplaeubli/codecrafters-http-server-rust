@@ -11,7 +11,7 @@ use bytes::BytesMut;
 struct HttpRequest {
     method: String,
     path: String,
-    headers: Vec<String>,
+    headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
@@ -30,10 +30,26 @@ impl HttpRequest {
                 request_line_parts.len()
             );
         }
+        let mut request_headers = HashMap::new();
+        if let Some(pos) = lines.iter().position(|x| x == "") {
+            let recieved_headers = &lines[1..pos];
+            let _body = &lines[pos + 1..];
+            for header in recieved_headers {
+                let parts: Vec<&str> = header.split(": ").collect();
+                if parts.len() != 2 {
+                    anyhow::bail!("invalid header: expected 2 parts, got {}", parts.len());
+                }
+                request_headers.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        } else {
+            return Err(anyhow::anyhow!("No request body found"));
+        }
+
+        println!("request lines unparsed: {:?}", lines);
         Ok(HttpRequest {
             method: request_line_parts[0].to_string(),
             path: request_line_parts[1].to_string(),
-            headers: vec![],
+            headers: request_headers,
             body: vec![],
         })
     }
@@ -139,6 +155,17 @@ fn handle_request(request: HttpRequest) -> Result<HttpResponse> {
                 resp.set_header("Content-Length".to_string(), message.len().to_string());
                 resp.set_body(message.as_bytes().into());
                 resp
+            }
+            "user-agent" => {
+                if let Some(user_agent) = request.headers.get("User-Agent") {
+                    let mut resp = HttpResponse::ok();
+                    resp.set_header("Content-Type".to_string(), "text/plain".to_string());
+                    resp.set_header("Content-Length".to_string(), user_agent.len().to_string());
+                    resp.set_body(user_agent.as_bytes().into());
+                    resp
+                } else {
+                    HttpResponse::internal_server_error()
+                }
             }
             _ => HttpResponse::not_found(),
         };
