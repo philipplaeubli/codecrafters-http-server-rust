@@ -133,12 +133,12 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
     let request = HttpRequest::from_bytes(input)?;
     let response = handle_request(request);
     let result = match response {
-        Ok(resp) => resp.encode(),
-        Err(_) => HttpResponse::internal_server_error().encode(),
+        Ok(resp) => resp,
+        Err(_) => HttpResponse::internal_server_error(),
     };
 
     let _res = stream
-        .write(result.as_slice())
+        .write(result.encode().as_slice())
         .await
         .context("Unable to write")?;
     Ok(())
