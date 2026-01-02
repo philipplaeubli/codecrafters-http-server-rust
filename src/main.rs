@@ -63,7 +63,7 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
             if let Some(accept_encoding) = &request.headers.get("Accept-Encoding") {
                 println!("Accept-Encoding: {:?}", accept_encoding);
 
-                if **accept_encoding == "gzip".to_string() {
+                if accept_encoding.contains("gzip") {
                     resp.set_header("Content-Encoding".to_string(), "gzip".to_string());
                 }
             }
