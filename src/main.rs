@@ -75,10 +75,10 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
                         resp.set_header("Content-Length".to_string(), resp.body.len().to_string());
                     }
                 }
-                if let Some(connection) = request.headers.get("Connection") {
-                    if connection == "close" {
-                        resp.set_header("Connection".to_string(), "close".to_string());
-                    }
+                if let Some(connection) = request.headers.get("Connection")
+                    && connection == "close"
+                {
+                    resp.set_header("Connection".to_string(), "close".to_string());
                 }
 
                 resp
@@ -91,10 +91,10 @@ async fn handle_connection(mut stream: TcpStream, config: ServerConfig) -> Resul
             .await
             .context("Unable to write")?;
 
-        if let Some(connection) = request.headers.get("Connection") {
-            if connection == "close" {
-                break;
-            }
+        if let Some(connection) = request.headers.get("Connection")
+            && connection == "close"
+        {
+            break;
         }
     }
     Ok(())
