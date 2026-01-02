@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::TcpListener;
 use std::{
     io::{BufRead, Read, Write},
@@ -13,12 +14,13 @@ struct HttpRequest {
     headers: Vec<String>,
     body: Vec<u8>,
 }
+
 impl HttpRequest {
     fn from_bytes(bytes: BytesMut) -> Result<HttpRequest, Error> {
         let lines: Vec<String> = bytes
             .lines()
             .map(|line| line.context("Invalid request"))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?; // convert to Result<Vec<String>, Error>  due to maping lines and unwrapping the it
 
         let request_line = lines.get(0).context("No request line")?;
         let request_line_parts: Vec<&str> = request_line.split_whitespace().collect();
@@ -34,6 +36,60 @@ impl HttpRequest {
             headers: vec![],
             body: vec![],
         })
+    }
+}
+
+struct HttpResponse {
+    status_code: u16,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+impl HttpResponse {
+    pub fn new(status_code: u16) -> Self {
+        HttpResponse {
+            status_code,
+            headers: HashMap::new(),
+            body: vec![],
+        }
+    }
+
+    pub fn not_found() -> Self {
+        HttpResponse::new(404)
+    }
+    pub fn ok() -> Self {
+        HttpResponse::new(200)
+    }
+    pub fn internal_server_error() -> Self {
+        HttpResponse::new(500)
+    }
+
+    fn set_header(&mut self, header: String, value: String) {
+        self.headers.insert(header, value);
+    }
+
+    fn set_body(&mut self, body: Vec<u8>) {
+        self.body = body;
+    }
+
+    fn reason(&self) -> String {
+        match self.status_code {
+            200 => "OK".to_string(),
+            201 => "Created".to_string(),
+            404 => "Not Found".to_string(),
+            500 => "Internal Server Error".to_string(),
+            _ => "Unknown".to_string(),
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut response =
+            format!("HTTP/1.1 {} {}\r\n", self.status_code, self.reason()).into_bytes();
+        for (header, value) in &self.headers {
+            response.extend(format!("{}: {}\r\n", header, value).into_bytes());
+        }
+        response.extend(b"\r\n");
+        response.extend(&self.body);
+        response
     }
 }
 
@@ -53,11 +109,94 @@ fn handle_connection(mut stream: TcpStream) -> Result<()> {
     let mut input = BytesMut::zeroed(1024);
     let _ = stream.read(&mut input).context("Failed to read")?;
     let request = HttpRequest::from_bytes(input)?;
-    let mut response: &[u8] = b"HTTP/1.1 404 Not Found\r\n\r\n";
+    let response = handle_request(request);
+    let result = match response {
+        Ok(resp) => resp.encode(),
+        Err(_) => HttpResponse::internal_server_error().encode(),
+    };
 
-    if request.path == "/" {
-        response = b"HTTP/1.1 200 OK\r\n\r\n";
+    stream
+        .write_all(result.as_slice())
+        .context("Unable to write")
+}
+
+fn handle_request(request: HttpRequest) -> Result<HttpResponse> {
+    let segments = request
+        .path
+        .split("/")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<&str>>();
+
+    println!("Path Segments: {:?}", segments);
+
+    if let Some(first_segment) = segments.first() {
+        let resp = match *first_segment {
+            "echo" => {
+                let message = *segments.get(1).unwrap_or(&"");
+
+                let mut resp = HttpResponse::ok();
+                resp.set_header("Content-Type".to_string(), "text/plain".to_string());
+                resp.set_header("Content-Length".to_string(), message.len().to_string());
+                resp.set_body(message.as_bytes().into());
+                resp
+            }
+            _ => HttpResponse::not_found(),
+        };
+        return Ok(resp);
+    } else {
+        return Ok(HttpResponse::ok());
     }
+}
 
-    stream.write_all(response).context("Unable to write")
+#[test]
+fn tests_handle_request() {
+    let actual = handle_request(HttpRequest {
+        body: vec![],
+        path: "/".to_string(),
+        method: "GET".to_string(),
+        headers: vec![],
+    })
+    .unwrap()
+    .status_code;
+    assert_eq!(200, actual);
+
+    let actual = handle_request(HttpRequest {
+        method: "GET".to_string(),
+        path: "".to_string(),
+        headers: vec![],
+        body: vec![],
+    })
+    .unwrap()
+    .status_code;
+    assert_eq!(200, actual);
+
+    let actual = handle_request(HttpRequest {
+        method: "GET".to_string(),
+        path: "/something".to_string(),
+        headers: vec![],
+        body: vec![],
+    })
+    .unwrap()
+    .status_code;
+    assert_eq!(404, actual);
+
+    let actual = handle_request(HttpRequest {
+        method: "GET".to_string(),
+        path: "/something/something".to_string(),
+        headers: vec![],
+        body: vec![],
+    })
+    .unwrap()
+    .status_code;
+    assert_eq!(404, actual);
+
+    let actual = handle_request(HttpRequest {
+        method: "GET".to_string(),
+        path: "/echo/something".to_string(),
+        headers: vec![],
+        body: vec![],
+    })
+    .unwrap()
+    .status_code;
+    assert_eq!(200, actual);
 }
