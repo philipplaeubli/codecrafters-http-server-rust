@@ -1,132 +1,21 @@
-use std::collections::HashMap;
 use std::env;
-use std::io::{BufRead, Read, Write};
-use std::ops::ControlFlow;
 
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
+use crate::request::HttpRequest;
+use crate::response::HttpResponse;
 
-impl HttpRequest {
-    fn from_bytes(bytes: BytesMut) -> Result<HttpRequest, Error> {
-        let header_end = bytes
-            .windows(4)
-            .position(|word| word == b"\r\n\r\n")
-            .context("Unable to find header/body seperator")?;
-
-        let header_data = &bytes[..header_end];
-        let body_data = &bytes[header_end + 4..];
-
-        let header_str = std::str::from_utf8(header_data).context("unable to parse header")?;
-
-        let mut lines = header_str.lines();
-
-        let request_line = lines.next().context("No request line")?;
-        let request_line_parts: Vec<&str> = request_line.split_whitespace().collect();
-        if request_line_parts.len() != 3 {
-            anyhow::bail!(
-                "invalid request line: expected 3 parts, got {}",
-                request_line_parts.len()
-            );
-        }
-        let mut request_headers = HashMap::new();
-        for header in lines {
-            if header.is_empty() {
-                break;
-            }
-            let parts: Vec<&str> = header.split(": ").collect();
-            if parts.len() != 2 {
-                anyhow::bail!("invalid header: expected 2 parts, got {}", parts.len());
-            }
-            request_headers.insert(parts[0].to_string(), parts[1].to_string());
-        }
-        let content_length: usize = request_headers
-            .get("Content-Length")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-
-        let body = body_data[..content_length.min(body_data.len())].to_vec();
-
-        Ok(HttpRequest {
-            method: request_line_parts[0].to_string(),
-            path: request_line_parts[1].to_string(),
-            headers: request_headers,
-            body,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct HttpResponse {
-    status_code: u16,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
-impl HttpResponse {
-    pub fn new(status_code: u16) -> Self {
-        HttpResponse {
-            status_code,
-            headers: HashMap::new(),
-            body: vec![],
-        }
-    }
-
-    pub fn not_found() -> Self {
-        HttpResponse::new(404)
-    }
-    pub fn ok() -> Self {
-        HttpResponse::new(200)
-    }
-    pub fn created() -> Self {
-        HttpResponse::new(201)
-    }
-    pub fn internal_server_error() -> Self {
-        HttpResponse::new(500)
-    }
-
-    fn set_header(&mut self, header: String, value: String) {
-        self.headers.insert(header, value);
-    }
-
-    fn set_body(&mut self, body: Vec<u8>) {
-        self.body = body;
-    }
-
-    fn reason(&self) -> String {
-        match self.status_code {
-            200 => "OK".to_string(),
-            201 => "Created".to_string(),
-            404 => "Not Found".to_string(),
-            500 => "Internal Server Error".to_string(),
-            _ => "Unknown".to_string(),
-        }
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut response =
-            format!("HTTP/1.1 {} {}\r\n", self.status_code, self.reason()).into_bytes();
-        for (header, value) in &self.headers {
-            response.extend(format!("{}: {}\r\n", header, value).into_bytes());
-        }
-        response.extend(b"\r\n");
-        response.extend(&self.body);
-        response
-    }
-}
+mod request;
+mod response;
 
 #[derive(Debug, Clone)]
 struct ServerConfig {
     static_directory: Option<String>,
 }
-
+impl ServerConfig {}
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = env::args();
@@ -137,7 +26,7 @@ async fn main() -> Result<()> {
     if args.len() > 2 {
         let directory_flag = args.nth(1).context("unable to parse directory flag")?;
         if directory_flag == "--directory" {
-            let abs_directory = args.nth(0).context("unable to parse absolute directory")?;
+            let abs_directory = args.next().context("unable to parse absolute directory")?;
             config.static_directory = Some(abs_directory);
         }
     }
@@ -206,16 +95,13 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
 
                 match request.method.as_str() {
                     "POST" => {
-                        if request.body.len() > 0 {
-                            if let Err(_err) = std::fs::write(&file_path, request.body.clone()) {
-                                println!("Error writing file: {:?}", _err);
-                                return Ok(HttpResponse::internal_server_error());
-                            } else {
-                                println!("File created successfully");
-                            }
+                        if let Err(_err) = std::fs::write(&file_path, request.body.clone()) {
+                            println!("Error writing file: {:?}", _err);
+                            return Ok(HttpResponse::internal_server_error());
                         } else {
-                            println!("No data to write");
+                            println!("File created successfully");
                         }
+
                         HttpResponse::created()
                     }
 
@@ -231,7 +117,9 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
                                     "Content-Length".to_string(),
                                     metadata.len().to_string(),
                                 );
-                                resp.set_body(std::fs::read(file_path).unwrap().into());
+                                let body_content =
+                                    std::fs::read(file_path).context("Failed to read file")?;
+                                resp.set_body(body_content);
                                 resp
                             } else {
                                 HttpResponse::not_found()
@@ -268,60 +156,79 @@ fn handle_request(request: HttpRequest, config: &ServerConfig) -> Result<HttpRes
             }
             _ => HttpResponse::not_found(),
         };
-        return Ok(resp);
+        Ok(resp)
     } else {
-        return Ok(HttpResponse::ok());
+        Ok(HttpResponse::ok())
     }
 }
 
 #[test]
 fn tests_handle_request() {
-    let actual = handle_request(HttpRequest {
-        body: vec![],
-        path: "/".to_string(),
-        method: "GET".to_string(),
-        headers: HashMap::new(),
-    })
+    let config = ServerConfig {
+        static_directory: None,
+    };
+
+    let actual = handle_request(
+        HttpRequest {
+            body: vec![],
+            path: "/".to_string(),
+            method: "GET".to_string(),
+            headers: std::collections::HashMap::new(),
+        },
+        &config,
+    )
     .unwrap()
     .status_code;
     assert_eq!(200, actual);
 
-    let actual = handle_request(HttpRequest {
-        method: "GET".to_string(),
-        path: "".to_string(),
-        headers: HashMap::new(),
-        body: vec![],
-    })
+    let actual = handle_request(
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: vec![],
+        },
+        &config,
+    )
     .unwrap()
     .status_code;
     assert_eq!(200, actual);
 
-    let actual = handle_request(HttpRequest {
-        method: "GET".to_string(),
-        path: "/something".to_string(),
-        headers: HashMap::new(),
-        body: vec![],
-    })
+    let actual = handle_request(
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "/something".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: vec![],
+        },
+        &config,
+    )
     .unwrap()
     .status_code;
     assert_eq!(404, actual);
 
-    let actual = handle_request(HttpRequest {
-        method: "GET".to_string(),
-        path: "/something/something".to_string(),
-        headers: HashMap::new(),
-        body: vec![],
-    })
+    let actual = handle_request(
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "/something/something".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: vec![],
+        },
+        &config,
+    )
     .unwrap()
     .status_code;
     assert_eq!(404, actual);
 
-    let actual = handle_request(HttpRequest {
-        method: "GET".to_string(),
-        path: "/echo/something".to_string(),
-        headers: HashMap::new(),
-        body: vec![],
-    })
+    let actual = handle_request(
+        HttpRequest {
+            method: "GET".to_string(),
+            path: "/echo/something".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: vec![],
+        },
+        &config,
+    )
     .unwrap()
     .status_code;
     assert_eq!(200, actual);
